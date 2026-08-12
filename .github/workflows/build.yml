@@ -135,7 +135,36 @@ jobs:
         run: |
           cp overlay/patches/*.patch openwrt/target/linux/msm89xx/patches/
           cp -r overlay/package/* openwrt/package/msm8916/
-          cat overlay/config/kernel-additions.txt >> openwrt/target/linux/msm89xx/config-6.12
+          # Merge our kernel symbols properly instead of cat >>.
+          #
+          # Upstream's config-6.12 ends without a newline, so a bare append
+          # glued our first symbol onto their last one:
+          #   CONFIG_ZSTD_DECOMPRESS=yCONFIG_STAGING=y
+          # losing both. Losing CONFIG_STAGING is silent and fatal: fbtft lives
+          # under drivers/staging, so its whole Kconfig stops being reachable
+          # and FB_TFT plus our GC9107 driver vanish without a warning, exactly
+          # like the FB_DEVICE trap this project started with.
+          #
+          # Existing entries are dropped first as well, so an earlier
+          # "# CONFIG_X is not set" cannot shadow what we set here.
+          CFG=openwrt/target/linux/msm89xx/config-6.12
+          ADD=overlay/config/kernel-additions.txt
+          printf '\n' >> "$CFG"
+          while read -r line; do
+            case "$line" in
+              CONFIG_*)   SYM=${line%%=*} ;;
+              "# CONFIG_"*) SYM=$(printf '%s' "$line" | awk '{print $2}') ;;
+              *) continue ;;
+            esac
+            sed -i -e "\|^${SYM}=|d" -e "\|^# ${SYM} is not set\$|d" "$CFG"
+          done < "$ADD"
+          cat "$ADD" >> "$CFG"
+
+          # Prove the merge landed: these two are what the screen hangs on.
+          grep -qx 'CONFIG_STAGING=y' "$CFG" || { echo "CONFIG_STAGING did not merge"; exit 1; }
+          grep -qx 'CONFIG_FB_TFT_GC9107=y' "$CFG" || { echo "GC9107 did not merge"; exit 1; }
+          grep -c 'CONFIG_.*=.*CONFIG_' "$CFG" | grep -qx 0 || { echo "glued config lines"; exit 1; }
+          echo "kernel config merged cleanly"
 
       - name: Update feeds
         working-directory: openwrt
