@@ -34,11 +34,29 @@ jobs:
           sudo apt-get install -y build-essential clang flex bison g++ gawk \
             gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
             python3-setuptools rsync swig unzip zlib1g-dev file wget \
-            ccache util-linux mkbootimg
-          # mkbootimg is a host tool: the msm89xx image recipe calls it through
-          # aboot-img to wrap the kernel. Without it the build runs to completion
-          # and only then dies with "command not found" at image generation.
-          command -v mkbootimg
+            ccache util-linux
+
+      # mkbootimg is a host tool: the msm89xx image recipe calls it through
+      # aboot-img to wrap the kernel. It is absent on the runner, and Ubuntu's
+      # own mkbootimg package is unusable — it ships the script without the gki
+      # module it imports, so it dies with ModuleNotFoundError. Take the tool
+      # from AOSP, where both halves live together.
+      - name: Install mkbootimg
+        run: |
+          sudo git clone -q --depth 1 \
+            https://android.googlesource.com/platform/system/tools/mkbootimg \
+            /opt/mkbootimg
+          printf '#!/bin/sh\nexec env PYTHONPATH=/opt/mkbootimg python3 /opt/mkbootimg/mkbootimg.py "$@"\n' \
+            | sudo tee /usr/local/bin/mkbootimg >/dev/null
+          sudo chmod +x /usr/local/bin/mkbootimg
+
+          # Prove it runs now, not an hour from now at image generation.
+          head -c 4096 /dev/urandom > /tmp/fake-kernel
+          mkbootimg --kernel /tmp/fake-kernel --ramdisk /dev/null \
+            --cmdline "test" -o /tmp/fake-boot.img
+          head -c 8 /tmp/fake-boot.img | grep -q 'ANDROID!' \
+            || { echo "mkbootimg produced no Android boot image"; exit 1; }
+          echo "mkbootimg works"
 
       - name: Resolve OpenWrt tag
         id: ver
