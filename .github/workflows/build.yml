@@ -39,7 +39,7 @@ jobs:
           sudo apt-get install -y build-essential clang flex bison g++ gawk \
             gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
             python3-setuptools rsync swig unzip zlib1g-dev file wget \
-            ccache util-linux
+            ccache util-linux fdisk gcc-arm-none-eabi
 
       # mkbootimg is a host tool: the msm89xx image recipe calls it through
       # aboot-img to wrap the kernel. It is absent on the runner, and Ubuntu's
@@ -124,17 +124,6 @@ jobs:
           cp -r msm89xx  ../openwrt/target/linux/msm89xx
           cp -r packages ../openwrt/package/msm8916
 
-          # Drop the firmware.zip artifact. It builds qhypstub and lk2nd, which
-          # need a bare-metal arm-none-eabi compiler and pull two git repos plus
-          # a 100 MB download at image time. We flash only boot and rootfs and
-          # never upload it, so it is an hour's worth of failure surface for a
-          # file nobody here uses.
-          MK=../openwrt/target/linux/msm89xx/image/msm8916.mk
-          sed -i -e 's/ firmware\.zip//' -e '/ARTIFACT\/firmware\.zip/d' "$MK"
-          if grep -q 'firmware\.zip' "$MK"; then
-            echo "firmware.zip is still referenced in $MK"; exit 1
-          fi
-          echo "firmware.zip artifact removed"
 
       - name: Apply this repository on top
         run: |
@@ -271,6 +260,7 @@ jobs:
           path: |
             openwrt/bin/targets/msm89xx/msm8916/*.img
             openwrt/bin/targets/msm89xx/msm8916/*.bin
+            openwrt/bin/targets/msm89xx/msm8916/*.zip
             openwrt/bin/targets/msm89xx/msm8916/*.manifest
             openwrt/bin/targets/msm89xx/msm8916/*flash.sh
             openwrt/bin/targets/msm89xx/msm8916/sha256sums
@@ -288,21 +278,21 @@ jobs:
           TAG="${{ steps.ver.outputs.tag }}-$(date -u +%Y%m%d-%H%M)"
 
           cat > notes.md <<'NOTES'
-          Flash over EDL - only `boot` and `rootfs` are written, the partition
-          table, the bootloaders and the radio partitions are left alone.
+          Two different jobs, do not confuse them.
 
-          You need the Firehose programmer, which `edl` does not ship:
+          ## Coming from the stock Android — full conversion
 
-          ```sh
-          curl -sLO https://raw.githubusercontent.com/OneLabsTools/Programmers/master/prog_emmc_firehose_8916.mbn
-          ```
+          The stock partition table has no `rootfs` at all: it carries `system`,
+          `userdata` and `cache` instead. Writing OpenWrt over it needs a new
+          partition table and the bootloaders, not just the two images, and the
+          radio partitions have to be saved and put back because repartitioning
+          moves their offsets. `flash.sh` in this release does the whole thing —
+          run it from a directory holding every file below.
 
-          Getting into EDL: holding Reset does **not** do it - on the stock
-          Android that lands in fastboot, from which EDL needs `fastboot oem
-          edl`. The method that works whatever is installed is to short `DP` to
-          `GND` on the board and, holding the short, plug in USB. The device
-          enumerates as `05c6:9008` and stays in EDL until it is reset or
-          unplugged.
+          ## Already running OpenWrt — updating
+
+          Only `boot` and `rootfs` are written. The partition table, the
+          bootloaders and the radio partitions are left alone.
 
           ```sh
           edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC w boot   *-boot.img
@@ -310,9 +300,24 @@ jobs:
           edl --loader=prog_emmc_firehose_8916.mbn reset
           ```
 
+          ## Both cases
+
+          You need the Firehose programmer, which `edl` does not ship:
+
+          ```sh
+          curl -sLO https://raw.githubusercontent.com/OneLabsTools/Programmers/master/prog_emmc_firehose_8916.mbn
+          ```
+
           The `--loader` is not optional: without it `edl` finds the device,
           prints `Mode detected: sahara` and waits forever, with nothing to send
           it. `reset` must be given without `--memory=eMMC`.
+
+          Getting into EDL: holding Reset does **not** do it - on the stock
+          Android that lands in fastboot, from which EDL needs `fastboot oem
+          edl`. The method that works whatever is installed is to short `DP` to
+          `GND` on the board and, holding the short, plug in USB. The device
+          enumerates as `05c6:9008` and stays in EDL until it is reset or
+          unplugged.
 
           Back up every partition before the first flash - `modem`, `modemst1`,
           `modemst2`, `fsg`, `fsc` and `persist` carry the IMEI and the radio
@@ -330,4 +335,4 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "OpenWrt ${{ steps.ver.outputs.tag }} for ${{ env.DEVICE }}" \
             --notes-file notes.md \
-            *-boot.img *-system.img sha256sums
+            *-boot.img *-system.img *-gpt_both0.bin *-firmware.zip *flash.sh sha256sums
