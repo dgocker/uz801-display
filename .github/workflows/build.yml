@@ -291,6 +291,19 @@ jobs:
           Flash over EDL - only `boot` and `rootfs` are written, the partition
           table, the bootloaders and the radio partitions are left alone.
 
+          You need the Firehose programmer, which `edl` does not ship:
+
+          ```sh
+          curl -sLO https://raw.githubusercontent.com/OneLabsTools/Programmers/master/prog_emmc_firehose_8916.mbn
+          ```
+
+          Getting into EDL: holding Reset does **not** do it - on the stock
+          Android that lands in fastboot, from which EDL needs `fastboot oem
+          edl`. The method that works whatever is installed is to short `DP` to
+          `GND` on the board and, holding the short, plug in USB. The device
+          enumerates as `05c6:9008` and stays in EDL until it is reset or
+          unplugged.
+
           ```sh
           edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC w boot   *-boot.img
           edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC w rootfs *-system.img
@@ -303,7 +316,14 @@ jobs:
 
           Back up every partition before the first flash - `modem`, `modemst1`,
           `modemst2`, `fsg`, `fsc` and `persist` carry the IMEI and the radio
-          calibration and cannot be regenerated.
+          calibration and cannot be regenerated. That command needs the loader
+          too.
+
+          If the device does not come back after `reset`, do not press the
+          button: pull the cable and the battery for a few seconds. A boot that
+          dies early leaves the PMIC still holding power, and in that state it
+          considers the device to be running, so no press of any length will
+          start it.
           NOTES
 
           gh release create "$TAG" \

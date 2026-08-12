@@ -48,9 +48,9 @@ to lose an hour here.
 Getting into EDL is the part every guide gets wrong. Holding Reset does **not**
 put this device into EDL: with the stock Android on it that lands in fastboot,
 from which EDL needs a further command (`fastboot oem edl`). The method that
-works regardless of what is installed is the hardware one — short the USB `D+`
-line to ground on the board while applying power, which drops the SoC's boot
-ROM straight into EDL.
+works whatever is installed is the hardware one: short `DP` to `GND` on the
+board and, **holding the short**, plug in USB. That drops the SoC's boot ROM
+straight into EDL, bypassing everything else.
 
 Either way the device then enumerates as `05c6:9008` and stays in EDL until it
 is reset or unplugged, so there is no hurry:
