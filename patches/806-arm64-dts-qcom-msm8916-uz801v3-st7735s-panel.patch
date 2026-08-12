@@ -1,6 +1,6 @@
 --- a/arch/arm64/boot/dts/qcom/msm8916-yiming-uz801v3.dts
 +++ b/arch/arm64/boot/dts/qcom/msm8916-yiming-uz801v3.dts
-@@ -3,35 +3,184 @@
+@@ -3,33 +3,248 @@
  /dts-v1/;
  
  #include "msm8916-ufi.dtsi"
@@ -17,14 +17,13 @@
 -
  &led_b {
  	gpios = <&tlmm 6 GPIO_ACTIVE_HIGH>;
- 	function = LED_FUNCTION_WLAN;
- };
- 
--&led_g {
--	gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
--	function = LED_FUNCTION_WAN;
 -};
 -
+-&led_g {
+-	gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
++	function = LED_FUNCTION_WLAN;
+ };
+ 
  &led_r {
  	gpios = <&tlmm 7 GPIO_ACTIVE_HIGH>;
  };
@@ -197,4 +196,68 @@
 +		fps = <30>;
 +		debug = <1>;
 +	};
++};
++
++/*
++ * Charging and state of charge.
++ *
++ * Every number is what the stock Android device tree programmed for this
++ * board, read back from the EDL dump (dtb_49.dts): vddmax 4200 mV, vddsafe
++ * 4350 mV, ibatsafe 1000 mA, cutoff 3.30 V, and the discharge curve below is
++ * the vendor's own pc-temp-ocv-lut at 25 C.
++ */
++&bat {
++	/* Vendor cutoff, and the point the curve below ends at. */
++	voltage-min-design-microvolt = <3300000>;
++
++	/*
++	 * pm8916-bms-vm is a voltage-mode gauge: without a curve it cannot turn
++	 * volts into a percentage and simply does not publish "capacity" at
++	 * all, which is why the dashboard had nothing to show.
++	 */
++	ocv-capacity-celsius = <25>;
++	ocv-capacity-table-0 = <4189000 100>, <4073000 95>, <4044000 90>, <4039000 85>, <4032000 80>, <4025000 75>, <4008000 70>, <3974000 65>, <3953000 60>, <3912000 55>, <3884000 50>, <3858000 45>, <3849000 40>, <3839000 35>, <3816000 30>, <3774000 25>, <3690000 20>, <3647000 16>, <3611000 13>, <3571000 11>, <3556000 10>, <3542000 9>, <3529000 8>, <3507000 7>, <3480000 6>, <3439000 5>, <3402000 4>, <3398000 3>, <3367000 2>, <3336000 1>, <3300000 0>;
++};
++
++&pm8916_charger {
++	monitored-battery = <&bat>;
++
++	/*
++	 * Safety trips, not the setpoint: the driver takes the charge voltage
++	 * from the battery node (4.20 V) and uses safe-current as the actual
++	 * fast-charge current.
++	 */
++	qcom,fast-charge-safe-voltage = <4350000>;
++	qcom,fast-charge-safe-current = <1000000>;
++
++	status = "okay";
++};
++
++/*
++ * The charger registers an extcon of its own. pm8916_usbin claims the same
++ * register block (0x1300) and the usb_vbus interrupt, so running both makes
++ * them fight and the USB gadget loses its VBUS source - that is what broke
++ * USB networking the first time the charger was enabled.
++ */
++&pm8916_usbin {
++	status = "disabled";
++};
++
++&usb {
++	extcon = <&pm8916_charger>;
++};
++
++&usb_hs_phy {
++	extcon = <&pm8916_charger>;
++};
++
++/*
++ * Tell the gauge where its power comes from. pm8916-bms-vm derives STATUS
++ * from power_supply_am_i_supplied(), which walks this link. It belongs on the
++ * gauge itself, not on the battery node: put on the battery it is silently
++ * ignored, and the gauge keeps answering Discharging while the charger is
++ * plainly pushing current into the cell.
++ */
++&pm8916_bms {
++	power-supplies = <&pm8916_charger>;
  };

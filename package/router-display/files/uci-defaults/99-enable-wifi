@@ -25,10 +25,24 @@ EOF
 
 cat > /etc/rc.button/power <<'EOF'
 #!/bin/sh
-# Display control only - the screen reacts through /etc/hotplug.d/button.
-# Deliberately does NOT power the device off.
+# The button is the display's control: a press wakes the screen and a double
+# press shows the Wi-Fi QR code, handled through /etc/hotplug.d/button. Those
+# must never reach the shutdown path, which is why short presses exit here.
+#
+# A deliberate hold still powers the device down - without it there is no way
+# to switch the thing off at all, since the PMIC brings it back up the moment
+# USB is plugged in.
 [ "${ACTION}" = "released" ] || exit 0
-exit 0
+
+# Ignore the button for the first minute. Powering the device on takes a long
+# hold, and if that hold outlasts the boot - which it easily can - the release
+# lands on a running system that sees a three second press and shuts straight
+# back down. The device then looks as though it refuses to start at all.
+UP=$(cut -d. -f1 /proc/uptime)
+[ "${UP:-0}" -ge 60 ] || exit 0
+
+[ "${SEEN:-0}" -ge 3 ] || exit 0
+poweroff
 EOF
 chmod +x /etc/rc.button/power
 

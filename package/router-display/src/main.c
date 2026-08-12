@@ -226,6 +226,21 @@ static void draw_battery(Framebuffer *fb, int x, int y, int pct, int charging)
     if (fill < 1 && pct > 0)
         fill = 1;
     fb_rect(fb, x + 2, y + 2, fill, h - 4, col);
+
+    /*
+     * Charging used to be shown by tinting the fill alone, which is easy to
+     * miss on a 22 by 11 pixel widget - you have to remember what colour it
+     * was a moment ago. Draw a bolt across the cell instead: it reads at a
+     * glance and does not depend on the fill level being visible at all.
+     */
+    if (charging) {
+        int cx = x + w / 2, cy = y + h / 2;
+        for (int i = 0; i < 4; i++)          /* upper stroke, leaning right */
+            fb_rect(fb, cx - 1 + i / 2, cy - 4 + i, 2, 1, C_TEXT);
+        for (int i = 0; i < 4; i++)          /* lower stroke, leaning left  */
+            fb_rect(fb, cx - 2 + i / 2, cy + i, 2, 1, C_TEXT);
+        fb_rect(fb, cx - 3, cy - 1, 6, 1, C_TEXT);   /* the crossbar */
+    }
 }
 
 /* small triangle: dir -1 = up, +1 = down */
