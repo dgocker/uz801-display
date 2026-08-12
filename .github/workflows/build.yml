@@ -119,6 +119,18 @@ jobs:
           cp -r msm89xx  ../openwrt/target/linux/msm89xx
           cp -r packages ../openwrt/package/msm8916
 
+          # Drop the firmware.zip artifact. It builds qhypstub and lk2nd, which
+          # need a bare-metal arm-none-eabi compiler and pull two git repos plus
+          # a 100 MB download at image time. We flash only boot and rootfs and
+          # never upload it, so it is an hour's worth of failure surface for a
+          # file nobody here uses.
+          MK=../openwrt/target/linux/msm89xx/image/msm8916.mk
+          sed -i -e 's/ firmware\.zip//' -e '/ARTIFACT\/firmware\.zip/d' "$MK"
+          if grep -q 'firmware\.zip' "$MK"; then
+            echo "firmware.zip is still referenced in $MK"; exit 1
+          fi
+          echo "firmware.zip artifact removed"
+
       - name: Apply this repository on top
         run: |
           cp overlay/patches/*.patch openwrt/target/linux/msm89xx/patches/
