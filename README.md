@@ -102,13 +102,15 @@ does USB networking. Set your APN under **Network → Modem**.
 **Back up first**, and back up everything:
 
 ```sh
-edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC rl backup
+edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC rl backup --skip=userdata,cache
 ```
 
 `modem`, `modemst1`, `modemst2`, `fsg`, `fsc` and `persist` hold the IMEI and
-the radio calibration, and nothing can regenerate them. Resist the urge to
-`--skip` the big partitions: `system` *is* Android, and without it the dump
-cannot take you back, however complete the rest of it looks.
+the radio calibration, and nothing can regenerate them. Skipping `userdata` and
+`cache` is fine — Android rebuilds both — but **check that `system.bin` is in
+the dump**, some 800 MB of it: `system` *is* Android, and without it the backup
+looks complete and cannot take you back. `gpt_main0.bin` matters too, since the
+conversion replaces the partition table.
 
 ## Power
 

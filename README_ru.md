@@ -102,13 +102,15 @@ bash openwrt-msm89xx-msm8916-yiming-uz801v3-flash.sh
 **Сначала сделайте резервную копию, и полную:**
 
 ```sh
-edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC rl backup
+edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC rl backup --skip=userdata,cache
 ```
 
 В `modem`, `modemst1`, `modemst2`, `fsg`, `fsc` и `persist` лежат IMEI и
-калибровка радиочасти, восстановить их неоткуда. И не поддавайтесь искушению
-пропустить большие разделы через `--skip`: `system` — это и есть Android, без
-него дамп не вернёт вас назад, каким бы полным ни выглядел.
+калибровка радиочасти, восстановить их неоткуда. Пропустить `userdata` и
+`cache` не жалко — Android создаёт их заново, — но **убедитесь, что в дампе
+есть `system.bin`**, около 800 МБ: `system` и есть Android, без него копия
+выглядит полной и не возвращает устройство назад. Пригодится и `gpt_main0.bin`:
+конвертация заменяет таблицу разделов.
 
 ## Питание
 
