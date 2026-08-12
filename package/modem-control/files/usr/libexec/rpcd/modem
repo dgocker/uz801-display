@@ -1,0 +1,414 @@
+#!/bin/sh
+# /usr/libexec/rpcd/modem
+#
+# The single owner of the QMI channel. Everything that wants to know or change
+# something about the modem goes through here - the dashboard, the info page
+# and the control page alike. Nothing else may call qmicli: one owner means
+# there is no concurrency to get wrong.
+#
+#   ubus call modem status       cached radio/registration/cell state
+#   ubus call modem config       mode, bands, operator selection + capabilities
+#   ubus call modem set          apply settings atomically, with rollback
+#   ubus call modem scan         start a background network scan
+#   ubus call modem scan_result  scan progress and results
+#   ubus call modem reconnect    bounce the data session
+
+. /usr/share/libubox/jshn.sh
+
+QMI_DEV=/dev/wwan0qmi0
+QMI="qmicli -d $QMI_DEV --device-open-proxy"
+IFACE=modem
+
+CACHE=/tmp/modem_state.json
+CACHE_TTL=5
+BUSY=/tmp/modem_busy
+SCAN_OUT=/tmp/modem_scan.json
+SCAN_STATE=/tmp/modem_scan_state
+APPLY_STATE=/tmp/modem_apply_state
+LOCK=/var/lock/modem.lock
+
+REG_TIMEOUT=60
+
+now() { awk '{print int($1)}' /proc/uptime; }
+
+# The busy flag carries a timestamp. A long operation can be killed (rpcd
+# aborts calls that outlive its timeout), and without an expiry the flag would
+# survive forever and leave every button in the UI disabled - which is exactly
+# what happened before this guard existed.
+BUSY_MAX=180
+
+busy_what() {
+	local line what ts
+	line=$(cat "$BUSY" 2>/dev/null) || return 0
+	what=${line%% *}
+	ts=${line##* }
+	[ -n "$what" ] || return 0
+	if [ -n "$ts" ] && [ $(( $(now) - ts )) -gt "$BUSY_MAX" ]; then
+		rm -f "$BUSY"
+		return 0
+	fi
+	echo "$what"
+}
+
+busy_set()  { echo "$1 $(now)" > "$BUSY"; }
+busy_clear() { rm -f "$BUSY"; }
+
+
+AT_PORT=/dev/wwan0at1
+AT_LOCK=/var/lock/modem_at.lock
+
+# Operator selection is done over AT, not QMI: this firmware answers
+# --nas-set-system-selection-preference with a bare "Internal" error, while
+# AT+COPS works - provided the data session is down first.
+at_cmd() {
+	local cmd="$1" out=/tmp/modem_at.out i=0 pid
+
+	[ -c "$AT_PORT" ] || return 1
+
+	(
+		flock -x 200
+		: > "$out"
+		cat "$AT_PORT" > "$out" &
+		pid=$!
+		sleep 1
+		printf '%s\r' "$cmd" > "$AT_PORT"
+		while [ $i -lt 15 ]; do
+			grep -qE 'OK|ERROR' "$out" && break
+			sleep 1
+			i=$((i + 1))
+		done
+		kill $pid 2>/dev/null
+	) 200> "$AT_LOCK"
+
+	tr -d '\r' < "$out"
+}
+
+# ------------------------------------------------------------------ reading
+
+# Collect everything worth knowing in one pass and store it as JSON.
+refresh_cache() {
+	local srv sig cell temp
+
+	srv=$($QMI --nas-get-serving-system 2>/dev/null)
+	sig=$($QMI --nas-get-signal-info 2>/dev/null)
+	cell=$($QMI --nas-get-cell-location-info 2>/dev/null)
+	# there is no --dms-get-temperature in this libqmi; the SoC sensor is what
+	# the vendor page reports anyway
+	temp=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | head -1)
+	[ -n "$temp" ] && temp=$(awk "BEGIN{printf \"%.1f\", $temp/1000}")
+
+	json_init
+	json_add_string reg_state "$(echo "$srv" | awk -F"'" '/Registration state:/ {print $2; exit}')"
+	json_add_string operator  "$(echo "$srv" | awk -F"'" '/Description:/ {print $2; exit}')"
+	json_add_string mcc       "$(echo "$srv" | awk -F"'" '/MCC:/ {print $2; exit}')"
+	json_add_string mnc       "$(echo "$srv" | awk -F"'" '/MNC:/ {print $2; exit}')"
+	json_add_string roaming   "$(echo "$srv" | awk -F"'" '/Roaming status:/ {print $2; exit}')"
+	json_add_string cell_id   "$(echo "$srv" | awk -F"'" '/3GPP cell ID:/ {print $2; exit}')"
+	json_add_string tac       "$(echo "$srv" | awk -F"'" '/LTE tracking area code:/ {print $2; exit}')"
+
+	case "$srv" in
+		*"'lte'"*)             json_add_string tech "4G" ;;
+		*umts*|*hsdpa*|*hspa*) json_add_string tech "3G" ;;
+		*gsm*|*gprs*|*edge*)   json_add_string tech "2G" ;;
+		*)                     json_add_string tech "" ;;
+	esac
+
+	json_add_string rssi "$(echo "$sig" | grep -A2 '^LTE:' | awk -F"'" '/RSSI:/ {print $2; exit}' | grep -oE '\-?[0-9.]+')"
+	json_add_string rsrp "$(echo "$sig" | awk -F"'" '/RSRP:/ {print $2; exit}' | grep -oE '\-?[0-9.]+')"
+	json_add_string rsrq "$(echo "$sig" | awk -F"'" '/RSRQ:/ {print $2; exit}' | grep -oE '\-?[0-9.]+')"
+	json_add_string snr  "$(echo "$sig" | awk -F"'" '/SNR:/ {print $2; exit}'  | grep -oE '\-?[0-9.]+')"
+
+	json_add_string earfcn "$(echo "$cell" | awk -F"'" '/EUTRA Absolute RF Channel Number:/ {print $2; exit}')"
+	json_add_string band   "$(echo "$cell" | sed -n 's/.*E-UTRA band \([0-9]*\).*/\1/p' | head -1)"
+	json_add_string pci    "$(echo "$cell" | awk -F"'" '/Physical Cell ID:/ {print $2; exit}')"
+	json_add_string temperature "$temp"
+
+	json_add_int ts "$(now)"
+	json_dump > "$CACHE"
+}
+
+cache_age() {
+	local ts
+	[ -s "$CACHE" ] || { echo 99999; return; }
+	ts=$(sed -n 's/.*"ts":[ ]*\([0-9]*\).*/\1/p' "$CACHE")
+	[ -n "$ts" ] || { echo 99999; return; }
+	echo $(( $(now) - ts ))
+}
+
+method_status() {
+	local b
+	b=$(busy_what)
+
+	# While a long operation holds the modem we deliberately do not poll it:
+	# readers get the last known values plus a busy flag, so nothing blocks
+	# and no display starts flickering with blanks.
+	if [ -z "$b" ] && [ "$(cache_age)" -ge "$CACHE_TTL" ]; then
+		refresh_cache
+	fi
+
+	if [ -s "$CACHE" ]; then
+		local body
+		body=$(sed 's/^{//; s/}$//' "$CACHE")
+		printf '{ "busy": "%s", %s }\n' "$b" "$body"
+	else
+		printf '{ "busy": "%s" }\n' "$b"
+	fi
+}
+
+method_config() {
+	local pref mode bands netsel caps
+
+	pref=$($QMI --nas-get-system-selection-preference 2>/dev/null)
+	mode=$(echo "$pref"   | awk -F"'" '/Mode preference:/ {print $2; exit}')
+	bands=$(echo "$pref"  | awk -F"'" '/LTE band preference:/ {print $2; exit}')
+	# Read it from AT as well: after an AT+COPS change QMI keeps reporting the
+	# stale value, and the page would show the opposite of what was applied.
+	netsel=$(echo "$pref" | awk -F"'" '/Network selection preference:/ {print $2; exit}')
+	case "$(at_cmd 'AT+COPS?' 2>/dev/null)" in
+		*"+COPS: 0"*) netsel=automatic ;;
+		*"+COPS: 1"*) netsel=manual ;;
+	esac
+
+	# Which LTE bands the hardware can do at all - never offer more than this.
+	# Hardware capability, not the current preference: this modem lists
+	# bands 1, 3, 5 while the stored preference also contains 8, and offering
+	# a band the radio does not have would just fail to register.
+	caps=$($QMI --dms-get-band-capabilities 2>/dev/null |
+	       awk -F"'" '/LTE bands:/ {print $2; exit}' | tr -d ' ')
+	[ -z "$caps" ] && caps=$(echo "$bands" | tr -d ' ')
+
+	json_init
+	json_add_string mode "$mode"
+	json_add_string bands "$bands"
+	json_add_string netsel "$netsel"
+	json_add_string bands_supported "$caps"
+	json_add_string apn "$(uci -q get network.$IFACE.apn)"
+	json_add_string profile "$(uci -q get network.$IFACE.profile)"
+	json_add_string busy "$(busy_what)"
+	json_dump
+}
+
+# ------------------------------------------------------------------ writing
+
+wait_registered() {
+	local i
+	for i in $(seq 1 "$REG_TIMEOUT"); do
+		$QMI --nas-get-serving-system 2>/dev/null |
+			grep -q "Registration state: 'registered'" && return 0
+		sleep 1
+	done
+	return 1
+}
+
+apply_prefs() {
+	local mode="$1" bands="$2" netsel="$3" mcc="$4" mnc="$5"
+	local args=""
+
+	[ -n "$mode" ]  && args="mode-pref=$mode"
+	[ -n "$bands" ] && args="${args:+$args,}lte-band-pref=$bands"
+
+	[ -n "$args" ] && $QMI --nas-set-system-selection-preference="$args" >/dev/null 2>&1
+
+	# The caller has already taken the interface down - AT+COPS is refused
+	# while a data session is up.
+	if [ "$netsel" = "manual" ] && [ -n "$mcc" ] && [ -n "$mnc" ]; then
+		at_cmd "AT+COPS=1,2,\"${mcc}${mnc}\"" >/dev/null 2>&1
+	elif [ "$netsel" = "automatic" ]; then
+		at_cmd "AT+COPS=0" >/dev/null 2>&1
+	fi
+}
+
+method_set() {
+	local mode bands netsel mcc mnc apn profile
+	local prev_mode prev_bands prev_netsel
+
+	read -r input
+	json_load "$input"
+	json_get_vars mode bands netsel mcc mnc apn profile
+
+	[ -n "$(busy_what)" ] && {
+		printf '{ "error": "busy", "busy": "%s" }\n' "$(busy_what)"; return; }
+
+	# Validation - refusing here is much cheaper than losing service and
+	# waiting out a rollback.
+	[ -n "$bands" ] || [ -n "$mode" ] || [ -n "$netsel" ] || [ -n "$apn" ] || {
+		echo '{ "error": "nothing to do" }'; return; }
+	if [ -n "$netsel" ] && [ "$netsel" = "manual" ] && { [ -z "$mcc" ] || [ -z "$mnc" ]; }; then
+		echo '{ "error": "manual selection needs mcc and mnc" }'; return
+	fi
+
+	busy_set "apply"
+	echo running > "$APPLY_STATE"
+
+	# Detached: applying can take a minute and rpcd would kill us long before
+	# that, leaving the modem half-configured and the busy flag stuck.
+	( apply_worker "$mode" "$bands" "$netsel" "$mcc" "$mnc" ) >/dev/null 2>&1 &
+
+	echo '{ "result": "started" }'
+}
+
+apply_worker() {
+	local mode="$1" bands="$2" netsel="$3" mcc="$4" mnc="$5"
+	local prev_mode prev_bands prev_netsel
+	local pref
+	pref=$($QMI --nas-get-system-selection-preference 2>/dev/null)
+	prev_mode=$(echo "$pref"   | awk -F"'" '/Mode preference:/ {print $2; exit}')
+	prev_bands=$(echo "$pref"  | awk -F"'" '/LTE band preference:/ {print $2; exit}' | tr -d ' ')
+	prev_netsel=$(echo "$pref" | awk -F"'" '/Network selection preference:/ {print $2; exit}')
+
+	[ -n "$apn" ] && { uci set network.$IFACE.apn="$apn"; uci commit network; }
+	[ -n "$profile" ] && { uci set network.$IFACE.profile="$profile"; uci commit network; }
+
+	# Down first: this also makes the zhiheqmi watchdog exit, so it will not
+	# race us with its own ifdown/ifup while we are reconfiguring.
+	ifdown "$IFACE" >/dev/null 2>&1
+	sleep 2
+
+	apply_prefs "$mode" "$bands" "$netsel" "$mcc" "$mnc"
+
+	ifup "$IFACE" >/dev/null 2>&1
+
+	if wait_registered; then
+		rm -f "$CACHE"
+		echo "ok" > "$APPLY_STATE"
+		busy_clear
+	else
+		busy_set "rollback"
+		ifdown "$IFACE" >/dev/null 2>&1
+		sleep 2
+		# Roll back the operator choice too - a denied network is precisely
+		# the case this exists for.
+		[ -n "$netsel" ] && at_cmd "AT+COPS=0" >/dev/null 2>&1
+		apply_prefs "$prev_mode" "$prev_bands" "$prev_netsel" "" ""
+		ifup "$IFACE" >/dev/null 2>&1
+		rm -f "$CACHE"
+		echo "error not registered, previous settings restored" > "$APPLY_STATE"
+		busy_clear
+	fi
+}
+
+method_apply_result() {
+	local st
+	st=$(cat "$APPLY_STATE" 2>/dev/null)
+	[ -z "$st" ] && st=idle
+	case "$st" in
+		running) echo '{ "state": "running" }' ;;
+		ok)      echo '{ "state": "ok" }' ;;
+		error*)  printf '{ "state": "error", "message": "%s" }\n' "${st#error }" ;;
+		*)       echo '{ "state": "idle" }' ;;
+	esac
+}
+
+method_scan() {
+	[ -n "$(busy_what)" ] && {
+		printf '{ "error": "busy", "busy": "%s" }\n' "$(busy_what)"; return; }
+
+	echo running > "$SCAN_STATE"
+	busy_set "scan"
+
+	# A scan takes about a minute and holds the channel; run it detached and
+	# let the page poll, instead of making the browser sit on a dead request.
+	(
+		$QMI --nas-network-scan 2>/dev/null > "$SCAN_OUT.raw"
+		parse_scan > "$SCAN_OUT"
+		echo done > "$SCAN_STATE"
+		busy_clear
+	) &
+
+	echo '{ "result": "started" }'
+}
+
+parse_scan() {
+	# qmicli prints the list twice - first with names and status, then again
+	# with the radio access technology. Take only entries that carry a
+	# Description and drop repeats, otherwise the page fills up with blanks.
+	awk '
+		/^Network \[/   { flush(); next }
+		/MCC:/         { mcc = val(); next }
+		/MNC:/         { mnc = val(); next }
+		/Status:/      { status = val(); next }
+		/Description:/ { desc = val(); next }
+		END { flush() }
+
+		function val(   v) {
+			v = $0
+			sub(/^[^:]*: /, "", v)
+			gsub(/^\x27|\x27$/, "", v)
+			return v
+		}
+		function flush(   key, short) {
+			if (mcc == "" || desc == "") { reset(); return }
+			key = mcc "-" mnc
+			if (key in seen) { reset(); return }
+			seen[key] = 1
+
+			short = "available"
+			if (status ~ /current-serving/) short = "current"
+			else if (status ~ /[^-]forbidden/) short = "forbidden"
+
+			printf "%s{\"mcc\":\"%s\",\"mnc\":\"%s\",\"name\":\"%s\",\"status\":\"%s\",\"home\":%s}",
+			       (n++ ? "," : ""), mcc, mnc, desc, short,
+			       (status ~ /home/ ? "true" : "false")
+			reset()
+		}
+		function reset() { mcc = ""; mnc = ""; status = ""; desc = "" }
+	' "$SCAN_OUT.raw" | sed 's/^/{ "networks": [ /; s/$/ ] }/'
+}
+
+method_scan_result() {
+	local state
+	state=$(cat "$SCAN_STATE" 2>/dev/null)
+	[ -z "$state" ] && state=idle
+
+	# Results outlive the state file on purpose: reloading the page should not
+	# force the user to sit through another minute-long sweep.
+	if [ "$state" != "running" ] && [ -s "$SCAN_OUT" ]; then
+		printf '{ "state": "done", %s }\n' "$(sed 's/^{//; s/}$//' "$SCAN_OUT")"
+	else
+		printf '{ "state": "%s", "networks": [] }\n' "$state"
+	fi
+}
+
+method_reconnect() {
+	[ -n "$(busy_what)" ] && {
+		printf '{ "error": "busy", "busy": "%s" }\n' "$(busy_what)"; return; }
+
+	busy_set "reconnect"
+	ifdown "$IFACE" >/dev/null 2>&1
+	sleep 3
+	ifup "$IFACE" >/dev/null 2>&1
+	wait_registered
+	rm -f "$CACHE"
+	busy_clear
+	echo '{ "result": "ok" }'
+}
+
+# --------------------------------------------------------------------- rpcd
+
+case "$1" in
+list)
+	cat <<EOF
+{
+	"status": {},
+	"config": {},
+	"set": { "mode": "str", "bands": "str", "netsel": "str", "mcc": "str", "mnc": "str", "apn": "str", "profile": "str" },
+	"scan": {},
+	"scan_result": {},
+	"apply_result": {},
+	"reconnect": {}
+}
+EOF
+	;;
+call)
+	case "$2" in
+		status)      method_status ;;
+		config)      method_config ;;
+		set)         method_set ;;
+		scan)        method_scan ;;
+		scan_result)  method_scan_result ;;
+		apply_result) method_apply_result ;;
+		reconnect)   method_reconnect ;;
+		*)           echo '{ "error": "unknown method" }' ;;
+	esac
+	;;
+esac

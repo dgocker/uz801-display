@@ -1,0 +1,213 @@
+--- /dev/null
++++ b/drivers/staging/fbtft/fb_gc9107.c
+@@ -0,0 +1,186 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * FB driver for the GC9107 LCD Controller
++ *
++ * Copyright (C) 2025
++ * Based on:
++ *   - Espressif ESP-IDF GC9107 driver (esp_lcd_gc9107.c)
++ *   - Craig Bishop init sequence
++ *   - Android MSM8916 MF68E device
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++
++#include "fbtft.h"
++
++#define DRVNAME "fb_gc9107"
++#define WIDTH 128
++#define HEIGHT 128
++#define BPP 16
++
++/* GC9107 Commands */
++#define GC9107_SWRESET  0x01
++#define GC9107_SLPOUT   0x11
++#define GC9107_INVON    0x21
++#define GC9107_INVOFF   0x20
++#define GC9107_DISPOFF  0x28
++#define GC9107_DISPON   0x29
++#define GC9107_CASET    0x2A
++#define GC9107_RASET    0x2B
++#define GC9107_RAMWR    0x2C
++#define GC9107_MADCTL   0x36
++#define GC9107_COLMOD   0x3A
++
++/*
++ * Init sequence from Espressif ESP-IDF driver
++ * Includes proper gamma, power control, and timing
++ */
++static int init_display(struct fbtft_par *par)
++{
++	par->fbtftops.reset(par);
++	mdelay(120);
++
++	/* Inter-register enable - unlocks the extended command set.
++	 * Without these two the whole configuration below is ignored.
++	 */
++	write_reg(par, 0xFE);
++	write_reg(par, 0xEF);
++
++	/* Values below are taken verbatim from the stock Android DTB of the
++	 * MF601 board (qcom,mdss-spi-on-command of qcom,mdss_spi_st7735s_128128_cmd).
++	 */
++	write_reg(par, 0xB0, 0xC0);
++	write_reg(par, 0xB2, 0x2F);
++	write_reg(par, 0xB3, 0x13);
++	write_reg(par, 0xB6, 0x19);
++	write_reg(par, 0xB7, 0x01);
++	write_reg(par, 0xAC, 0xC0);
++	write_reg(par, 0xAB, 0x0F);
++	write_reg(par, 0xB4, 0x04);
++	write_reg(par, 0xA8, 0x04);
++	write_reg(par, 0x3A, 0x05);
++	write_reg(par, 0xB8, 0x08);
++	write_reg(par, 0xE8, 0x27);
++	write_reg(par, 0xE9, 0x47);
++	write_reg(par, 0xEA, 0x44);
++	write_reg(par, 0xEB, 0xE0);
++	write_reg(par, 0xC6, 0x3F);
++	write_reg(par, 0xC7, 0x1D);
++	write_reg(par, 0x36, 0x00);
++	write_reg(par, 0x35, 0x00);
++	write_reg(par, 0x44, 0x00);
++
++	write_reg(par, 0xF0,
++		0x0F, 0x24, 0x2C, 0x38, 0x67, 0x39, 0x20,
++		0x60, 0x04, 0x14, 0x10, 0x10, 0x0C, 0x1F);
++
++	write_reg(par, 0xF1,
++		0x1F, 0x38, 0x3F, 0x4F, 0xD7, 0x24, 0x3F,
++		0x60, 0x00, 0x03, 0x09, 0x14, 0x10, 0x1F);
++
++	write_reg(par, 0x2A, 0x00, 0x00, 0x00, 0x83);
++	write_reg(par, 0x2B, 0x00, 0x00, 0x00, 0x83);
++	write_reg(par, 0x2C);
++
++	/* stock enables inversion */
++	write_reg(par, 0x21);
++
++	write_reg(par, 0x11);
++	mdelay(120);
++	write_reg(par, 0x29);
++	mdelay(50);
++	write_reg(par, 0x2C);
++
++	return 0;
++}
++
++/*
++ * Set address window with proper offsets for GC9107
++ * GC9107 GRAM is 132x130, but display is 128x128
++ * Requires COL_OFFSET=2, ROW_OFFSET=1
++ */
++static void set_addr_win(struct fbtft_par *par, int xs, int ys, int xe, int ye)
++{
++	/* GC9107 specific offsets */
++	const int col_offset = 2;
++	const int row_offset = 1;
++
++	/* Column Address Set */
++	write_reg(par, GC9107_CASET,
++		(xs + col_offset) >> 8,
++		(xs + col_offset) & 0xFF,
++		(xe + col_offset) >> 8,
++		(xe + col_offset) & 0xFF);
++
++	/* Row Address Set */
++	write_reg(par, GC9107_RASET,
++		(ys + row_offset) >> 8,
++		(ys + row_offset) & 0xFF,
++		(ye + row_offset) >> 8,
++		(ye + row_offset) & 0xFF);
++
++	/* Memory Write */
++	write_reg(par, GC9107_RAMWR);
++}
++
++/*
++ * Memory Data Access Control (MADCTL)
++ * Controls rotation and BGR mode
++ */
++static int set_var(struct fbtft_par *par)
++{
++	u8 madctl = 0;
++
++	/* Rotation */
++	switch (par->info->var.rotate) {
++	case 0:
++		madctl = 0x00;
++		break;
++	case 90:
++		madctl = 0x60; /* MV | MX */
++		break;
++	case 180:
++		madctl = 0xC0; /* MY | MX */
++		break;
++	case 270:
++		madctl = 0xA0; /* MV | MY */
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	/* BGR mode from DTS */
++	if (par->bgr)
++		madctl |= 0x08;
++
++	write_reg(par, GC9107_MADCTL, madctl);
++
++	return 0;
++}
++
++static struct fbtft_display display = {
++	.regwidth = 8,
++	.width = WIDTH,
++	.height = HEIGHT,
++	.bpp = BPP,
++	.fps = 30,
++	.fbtftops = {
++		.init_display = init_display,
++		.set_addr_win = set_addr_win,
++		.set_var = set_var,
++	},
++};
++
++FBTFT_REGISTER_DRIVER(DRVNAME, "galaxycore,gc9107", &display);
++
++MODULE_ALIAS("spi:" DRVNAME);
++MODULE_ALIAS("platform:" DRVNAME);
++MODULE_ALIAS("spi:gc9107");
++MODULE_ALIAS("platform:gc9107");
++
++MODULE_DESCRIPTION("FB driver for GC9107 LCD Controller");
++MODULE_AUTHOR("Based on Espressif ESP-IDF driver");
++MODULE_LICENSE("GPL");
+--- a/drivers/staging/fbtft/Kconfig
++++ b/drivers/staging/fbtft/Kconfig
+@@ -39,6 +39,12 @@ config FB_TFT_AGM1264K_FL
+ 	help
+ 	  Generic Framebuffer support for AGM1264K-FL LCD display
+ 
++config FB_TFT_GC9107
++	tristate "FB driver for the GC9107 LCD Controller"
++	depends on FB_TFT
++	help
++	  Framebuffer support for GalaxyCore GC9107 128x128 LCD
++
+ config FB_TFT_BD663474
+ 	tristate "FB driver for the BD663474 LCD Controller"
+ 	depends on FB_TFT
+--- a/drivers/staging/fbtft/Makefile
++++ b/drivers/staging/fbtft/Makefile
+@@ -6,5 +6,6 @@ obj-$(CONFIG_FB_TFT)             += fbtft.o
+ fbtft-y                          += fbtft-core.o fbtft-sysfs.o fbtft-bus.o fbtft-io.o
+ 
+ obj-$(CONFIG_FB_TFT_AGM1264K_FL) += fb_agm1264k-fl.o
++obj-$(CONFIG_FB_TFT_GC9107)      += fb_gc9107.o
+ obj-$(CONFIG_FB_TFT_BD663474)    += fb_bd663474.o
+ obj-$(CONFIG_FB_TFT_HX8340BN)    += fb_hx8340bn.o

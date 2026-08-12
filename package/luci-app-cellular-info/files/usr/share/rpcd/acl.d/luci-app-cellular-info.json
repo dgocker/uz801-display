@@ -1,0 +1,10 @@
+{
+	"luci-app-cellular-info": {
+		"description": "Grant access to Cellular Info API",
+		"read": {
+			"ubus": {
+				"cellular_info": [ "get" ]
+			}
+		}
+	}
+}

@@ -1,0 +1,13 @@
+{
+	"admin/network/cellular": {
+		"title": "Cellular Info",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "cellular_info/index"
+		},
+		"depends": {
+			"acl": [ "luci-app-cellular-info" ]
+		}
+	}
+}

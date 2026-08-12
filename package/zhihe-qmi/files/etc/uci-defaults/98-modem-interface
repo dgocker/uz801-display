@@ -1,0 +1,33 @@
+#!/bin/sh
+# Set up the LTE interface on a fresh install.
+#
+# device= is deliberately the QMI character device, not a network interface:
+# the protocol talks to /dev/wwan0qmi0. (Older revisions of this package
+# declared it as a netifd device, which meant saving the interface page in
+# LuCI silently rewrote the path to "wwan0" and broke the connection.)
+
+uci -q batch <<UCI
+set network.modem=interface
+set network.modem.proto='zhiheqmi'
+set network.modem.device='/dev/wwan0qmi0'
+set network.modem.profile='3'
+set network.modem.auto='1'
+commit network
+UCI
+
+# The APN is operator specific; leave whatever is already configured.
+[ -n "$(uci -q get network.modem.apn)" ] || {
+	uci set network.modem.apn='internet'
+	uci commit network
+}
+
+# Put the modem interface in the wan firewall zone so NAT applies to it.
+zone=$(uci show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.name='wan'$/\1/p" | head -1)
+[ -n "$zone" ] && {
+	uci -q get firewall.$zone.network | grep -q '\bmodem\b' || {
+		uci add_list firewall.$zone.network='modem'
+		uci commit firewall
+	}
+}
+
+exit 0

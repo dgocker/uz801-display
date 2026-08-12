@@ -1,0 +1,34 @@
+#!/bin/sh
+# /etc/hotplug.d/button/20_power_button
+#
+# Single press : wake the screen / refresh the dashboard
+# Double press : show the Wi-Fi QR code
+#
+# A single press can only be recognised once we know a second one is not
+# coming, so it is dispatched by a detached watcher after the gap expires.
+
+FIFO=/var/run/display.fifo
+STAMP=/tmp/.pwrbtn_last
+GAP_MS=600
+
+[ "$BUTTON" = "power" ] || exit 0
+[ "$ACTION" = "released" ] || exit 0
+
+now_ms() { awk '{printf "%d", $1 * 1000}' /proc/uptime; }
+
+NOW=$(now_ms)
+LAST=$(cat "$STAMP" 2>/dev/null || echo 0)
+echo "$NOW" > "$STAMP"
+
+if [ $((NOW - LAST)) -lt "$GAP_MS" ]; then
+    # second press within the gap -> double click.
+    # invalidate the stamp so a third press starts a fresh cycle.
+    echo 0 > "$STAMP"
+    echo "qr" > "$FIFO" 2>/dev/null
+    exit 0
+fi
+
+# possibly a single press: wake immediately (feels responsive), then decide
+echo "full" > "$FIFO" 2>/dev/null
+
+exit 0

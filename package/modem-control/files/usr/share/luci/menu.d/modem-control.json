@@ -1,0 +1,13 @@
+{
+	"admin/network/modem_control": {
+		"title": "Modem",
+		"order": 29,
+		"action": {
+			"type": "view",
+			"path": "modem_control/index"
+		},
+		"depends": {
+			"acl": [ "modem-control" ]
+		}
+	}
+}

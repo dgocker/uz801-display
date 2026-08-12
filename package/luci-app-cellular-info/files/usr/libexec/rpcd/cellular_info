@@ -1,0 +1,90 @@
+#!/bin/sh
+. /usr/share/libubox/jshn.sh
+
+case "$1" in
+    list)
+        echo '{ "get": { } }'
+        ;;
+    call)
+        case "$2" in
+            get)
+                json_init
+
+                temp=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | head -n1)
+                if [ -n "$temp" ]; then
+                    temp_c=$(awk "BEGIN {printf \"%.1f\", $temp / 1000}")
+                    json_add_string temperature "$temp_c"
+                fi
+
+                sig_info=$(qmicli -d /dev/wwan0qmi0 --device-open-proxy --nas-get-signal-info 2>/dev/null)
+                rsrp=$(echo "$sig_info" | awk -F"'" '/RSRP:/ {print $2}' | sed 's/ dBm//')
+                rsrq=$(echo "$sig_info" | awk -F"'" '/RSRQ:/ {print $2}' | sed 's/ dB//')
+                rssi=$(echo "$sig_info" | awk -F"'" '/RSSI:/ {print $2}' | sed 's/ dBm//')
+                snr=$(echo "$sig_info" | awk -F"'" '/SNR:/ {print $2}' | sed 's/ dB//')
+
+                [ -n "$rsrp" ] && json_add_string rsrp "$rsrp"
+                [ -n "$rsrq" ] && json_add_string rsrq "$rsrq"
+                [ -n "$rssi" ] && json_add_string rssi "$rssi"
+                [ -n "$snr" ] && json_add_string snr "$snr"
+
+                srv_sys=$(qmicli -d /dev/wwan0qmi0 --device-open-proxy --nas-get-serving-system 2>/dev/null)
+                reg_state=$(echo "$srv_sys" | awk -F"'" '/Registration state:/ {print $2}')
+                mcc=$(echo "$srv_sys" | awk -F"'" '/MCC:/ {print $2}' | head -n1)
+                mnc=$(echo "$srv_sys" | awk -F"'" '/MNC:/ {print $2}' | head -n1)
+                operator=$(echo "$srv_sys" | awk -F"'" '/Description:/ {print $2}' | head -n1)
+                cell_id=$(echo "$srv_sys" | awk -F"'" '/3GPP cell ID:/ {print $2}')
+                tac=$(echo "$srv_sys" | awk -F"'" '/LTE tracking area code:/ {print $2}')
+
+                [ -n "$reg_state" ] && json_add_string reg_state "$reg_state"
+                [ -n "$mcc" ] && json_add_string mcc "$mcc"
+                [ -n "$mnc" ] && json_add_string mnc "$mnc"
+                [ -n "$operator" ] && json_add_string operator "$operator"
+                [ -n "$cell_id" ] && json_add_string cell_id "$cell_id"
+                [ -n "$tac" ] && json_add_string tac "$tac"
+
+                cell_loc=$(qmicli -d /dev/wwan0qmi0 --device-open-proxy --nas-get-cell-location-info 2>/dev/null)
+                earfcn=$(echo "$cell_loc" | awk -F"'" '/EUTRA Absolute RF Channel Number:/ {print $2; exit}')
+                band=$(echo "$cell_loc" | sed -n 's/.*E-UTRA band \([0-9]*\).*/\1/p' | head -n1)
+                pci=$(echo "$cell_loc" | awk -F"'" '/Physical Cell ID:/ {print $2}' | head -n1)
+
+                [ -n "$earfcn" ] && json_add_string earfcn "$earfcn"
+                [ -n "$band" ] && json_add_string band "$band"
+                [ -n "$pci" ] && json_add_string pci "$pci"
+ 
+                json_add_array neighbors
+                while read -r npci nrsrp nrsrq nrssi; do
+                    [ -z "$npci" ] && continue
+                    json_add_object ""
+                    json_add_string pci "$npci"
+                    json_add_string rsrp "$nrsrp"
+                    json_add_string rsrq "$nrsrq"
+                    json_add_string rssi "$nrssi"
+                    json_close_object
+                done <<EOF
+$(echo "$cell_loc" | awk '
+/Physical Cell ID:/ { pci=$4; gsub(/'\''/,"",pci) }
+/RSRQ:/ { rsrq=$2; gsub(/'\''/,"",rsrq) }
+/RSRP:/ { rsrp=$2; gsub(/'\''/,"",rsrp) }
+/RSSI:/ { rssi=$2; gsub(/'\''/,"",rssi); print pci, rsrp, rsrq, rssi; pci=""; rsrp=""; rsrq=""; rssi="" }
+')
+EOF
+                json_close_array
+
+                if ubus list modem_at >/dev/null 2>&1; then
+                    resp_crsm=$(ubus call modem_at exec '{"cmd": "AT+CRSM=176,12258,0,0,10"}' 2>/dev/null | jsonfilter -e '@.response' 2>/dev/null)
+                    iccid_hex=$(echo "$resp_crsm" | grep -o '+CRSM: [^"]*"[^"]*"' | cut -d'"' -f2)
+                    if [ -n "$iccid_hex" ]; then
+                        iccid=$(echo "$iccid_hex" | awk '{out=""; for(i=1; i<=length($0); i+=2) out=out substr($0, i+1, 1) substr($0, i, 1); gsub(/F/, "", out); print out}')
+                        [ -n "$iccid" ] && json_add_string iccid "$iccid"
+                    fi
+
+                    resp_cgsn=$(ubus call modem_at exec '{"cmd": "AT+CGSN"}' 2>/dev/null | jsonfilter -e '@.response' 2>/dev/null)
+                    imei=$(echo "$resp_cgsn" | grep -o '+CGSN:[0-9]*' | cut -d':' -f2)
+                    [ -n "$imei" ] && json_add_string imei "$imei"
+                fi
+
+                json_dump
+                ;;
+        esac
+        ;;
+esac

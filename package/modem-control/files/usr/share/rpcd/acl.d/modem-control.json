@@ -1,0 +1,7 @@
+{
+	"modem-control": {
+		"description": "Modem status and control",
+		"read":  { "ubus": { "modem": [ "status", "config", "scan_result", "apply_result" ] } },
+		"write": { "ubus": { "modem": [ "set", "scan", "reconnect" ] } }
+	}
+}

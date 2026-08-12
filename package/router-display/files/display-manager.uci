@@ -1,0 +1,11 @@
+config display 'display'
+	# seconds of inactivity before the backlight dims and the lock screen
+	# replaces the dashboard
+	option timeout_dim '20'
+	# further seconds before the backlight goes off entirely
+	option timeout_off '15'
+	option brightness_dim_divisor '8'
+	option fifo '/var/run/display.fifo'
+	option enable_lockscreen '1'
+	# how often the dashboard redraws while the screen is lit, seconds
+	option refresh_interval '5'

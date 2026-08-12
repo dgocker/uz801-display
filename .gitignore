@@ -1,0 +1,5 @@
+*.img
+*.bin
+dl/
+build_dir/
+staging_dir/

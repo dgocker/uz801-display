@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/dts-v1/;
+
+#include "msm8916-ufi.dtsi"
+#include <dt-bindings/pinctrl/qcom,pmic-mpp.h>
+
+/ {
+	model = "uz801 v3.0 4G Modem Stick";
+	compatible = "yiming,uz801-v3", "qcom,msm8916";
+};
+
+&led_b {
+	gpios = <&tlmm 6 GPIO_ACTIVE_HIGH>;
+	function = LED_FUNCTION_WLAN;
+};
+
+&led_r {
+	gpios = <&tlmm 7 GPIO_ACTIVE_HIGH>;
+};
+
+/*
+ * SIM slot control. This board (MF601 family) gates the SIM through four
+ * lines; the uz801 profile does not describe them at all, so they float and
+ * the modem reports sim-missing even with a card inserted.
+ * Values taken from the vendor msm8916-ufi-mf601.dts.
+ * Exposed as LEDs so the combination can be tried at runtime via
+ * the sim: LED entries under /sys/class/leds without rebuilding.
+ */
+&{/leds} {
+	sim_sel: sim-sel {
+		gpios = <&tlmm 49 GPIO_ACTIVE_HIGH>;
+		label = "sim:sel";
+		default-state = "on";
+	};
+
+	sim_en: sim-en {
+		gpios = <&tlmm 24 GPIO_ACTIVE_HIGH>;
+		label = "sim:en";
+		default-state = "off";
+	};
+
+	sim_sel2: sim-sel2 {
+		gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+		label = "sim:sel2";
+		default-state = "off";
+	};
+
+	sim_en2: sim-en2 {
+		gpios = <&tlmm 51 GPIO_ACTIVE_HIGH>;
+		label = "sim:en2";
+		default-state = "off";
+	};
+};
+
+&gpio_leds_default {
+	pins = "gpio6", "gpio7", "gpio24", "gpio49", "gpio50", "gpio51";
+};
+
+/*
+ * ST7735S 128x128 SPI panel (MF601-family board).
+ *
+ * Wiring taken from the stock Android device tree of this unit
+ * (qcom,board-id = <0x8 0x100>):
+ *   aliases { spi0 = "/soc/spi@78b7000"; }  -> blsp_spi3
+ *   qcom,platform-spi-dc-gpio = <&tlmm 23>
+ *   qcom,platform-reset-gpio  = <&tlmm 25>
+ *   vdd-supply   -> pm8916 l17 (2.85V)
+ *   vddio-supply -> pm8916 l6  (1.8V)
+ *   backlight    -> PM8916 MPP4, driven as a current sink by the PMIC's
+ *                   PWM/LPG block (stock: qcom,leds-qpnp "lcdwled-backlight",
+ *                   source-sel=1, 10mA). Plain GPIO output does NOT light it.
+ *
+ * The upstream uz801 pin mapping conflicts with the panel and is dropped:
+ *   button_restart was on GPIO23 (= panel DC)
+ *   led_g          was on GPIO8  (= blsp_spi3 MOSI)
+ */
+/ {
+	/delete-node/ gpio-keys;
+
+	/*
+	 * Cell fitted by the user: 815060AR, Li-ion, 3.8V nominal, 3000mAh,
+	 * 11.4Wh, label says 4.35V max charge.
+	 *
+	 * We deliberately charge to 4.20V, not the 4.35V on the label: an
+	 * unbranded cell may well be an ordinary 4.2V one, and charging that
+	 * to 4.35V means permanent overcharge. 4.20V is safe either way and
+	 * only costs some capacity on a genuine high-voltage cell.
+	 */
+	bat: battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4200000>;
+		energy-full-design-microwatt-hours = <11400000>;
+		charge-full-design-microamp-hours = <3000000>;
+	};
+
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pm8916_pwm 0 100000>;
+		brightness-levels = <0 4 8 16 32 64 128 255>;
+		num-interpolated-steps = <32>;
+		default-brightness-level = <255>;
+		status = "okay";
+	};
+};
+
+/delete-node/ &led_g;
+
+&pm8916_pwm {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm_out>;
+};
+
+&pm8916_mpps {
+	/*
+	 * The stock DTB programs MODE_CTL = 0x60 on this MPP: mode bits 110 =
+	 * current sink. It is an LED-style sink feeding the panel backlight,
+	 * not a logic output - configuring it as "digital" only produces a
+	 * glitch when the level changes and never lights the panel.
+	 * Keep the sink, but let the PMIC's PWM drive it through DTEST so
+	 * brightness stays controllable.
+	 */
+	pwm_out: mpp4-state {
+		pins = "mpp4";
+		function = "sink";
+		output-low;
+		qcom,dtest = <1>;
+		power-source = <PM8916_MPP_VPH>;
+	};
+};
+
+&pm8916_bms {
+	status = "okay";
+	monitored-battery = <&bat>;
+};
+
+&pm8916_rpm_regulators {
+	pm8916_l17: l17 {
+		regulator-min-microvolt = <2850000>;
+		regulator-max-microvolt = <2850000>;
+		regulator-always-on;
+	};
+};
+
+&pm8916_l6 {
+	regulator-always-on;
+};
+
+&blsp_spi3 {
+	status = "okay";
+
+	/*
+	 * blsp_spi3_default muxes GPIO10 to plain "gpio" function and parks it
+	 * high, so the controller's native chip select never reaches the pin
+	 * and the panel is never selected. Drive it as a GPIO CS instead
+	 * (spi-qup sets use_gpio_descriptors, and apq8016-schneider-hmibsc
+	 * does the same on this SoC family).
+	 */
+	cs-gpios = <&tlmm 10 GPIO_ACTIVE_LOW>;
+
+	panel@0 {
+		compatible = "galaxycore,gc9107";
+		reg = <0>;
+		spi-max-frequency = <16000000>;
+
+		reset-gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
+		dc-gpios = <&tlmm 23 GPIO_ACTIVE_HIGH>;
+
+		vdd-supply = <&pm8916_l17>;
+		vddio-supply = <&pm8916_l6>;
+
+		backlight = <&backlight>;
+
+		width-mm = <23>;
+		height-mm = <23>;
+
+		buswidth = <8>;
+		width = <128>;
+		height = <128>;
+		rotate = <0>;
+		fps = <30>;
+		debug = <1>;
+	};
+};

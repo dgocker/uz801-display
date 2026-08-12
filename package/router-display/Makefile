@@ -1,0 +1,78 @@
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=router-display
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+
+PKG_QRGEN_NAME:=QR-Code-generator
+PKG_QRGEN_VERSION:=v1.8.0
+PKG_QRGEN_SOURCE:=$(PKG_QRGEN_VERSION).tar.gz
+PKG_QRGEN_URL:=https://github.com/nayuki/QR-Code-generator/archive/refs/tags
+PKG_QRGEN_HASH:=skip
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/router-display
+  SECTION:=utils
+  CATEGORY:=Utilities
+  TITLE:=Framebuffer router status display
+  DEPENDS:=+libfreetype +kmod-button-hotplug +dejavu-fonts-ttf-DejaVuSans-Bold +dejavu-fonts-ttf-DejaVuSans
+endef
+
+define Package/router-display/description
+  Display router status on RGB565 framebuffer
+endef
+
+define Download/qrcodegen
+  URL:=$(PKG_QRGEN_URL)
+  FILE:=qrcodegen-$(PKG_QRGEN_VERSION).tar.gz
+  URL_FILE:=$(PKG_QRGEN_VERSION).tar.gz
+  HASH:=$(PKG_QRGEN_HASH)
+endef
+
+define Build/Prepare
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)
+	$(CP) ./src/main.c $(PKG_BUILD_DIR)/
+	$(eval $(call Download,qrcodegen))
+	tar -xzf $(DL_DIR)/qrcodegen-$(PKG_QRGEN_VERSION).tar.gz -C $(PKG_BUILD_DIR)
+	$(CP) $(PKG_BUILD_DIR)/$(PKG_QRGEN_NAME)-*/c/qrcodegen.c $(PKG_BUILD_DIR)/
+	$(CP) $(PKG_BUILD_DIR)/$(PKG_QRGEN_NAME)-*/c/qrcodegen.h $(PKG_BUILD_DIR)/
+endef
+
+define Build/Compile
+	$(TARGET_CC) $(TARGET_CFLAGS) -O3 -ffast-math \
+		$(TARGET_CPPFLAGS) \
+		-I$(STAGING_DIR)/usr/include/freetype2 \
+		$(TARGET_LDFLAGS) \
+		-o $(PKG_BUILD_DIR)/router-display \
+		$(PKG_BUILD_DIR)/main.c \
+		$(PKG_BUILD_DIR)/qrcodegen.c \
+		-lfreetype -lm
+endef
+
+define Package/router-display/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/router-display $(1)/usr/bin/
+	$(INSTALL_BIN) ./files/display-manager.sh $(1)/usr/bin/display-manager
+	$(INSTALL_BIN) ./files/update-display.sh $(1)/usr/bin/update-display
+
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/display-manager.init $(1)/etc/init.d/display-manager
+
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/button
+	$(INSTALL_BIN) ./files/hotplugs/20_power_button $(1)/etc/hotplug.d/button/20_power_button
+
+	$(INSTALL_DIR) $(1)/etc/logos
+	$(INSTALL_DATA) ./files/logos/boot_logo.fb $(1)/etc/logos/boot_logo.fb
+	$(INSTALL_DATA) ./files/logos/poweroff_logo.fb $(1)/etc/logos/poweroff_logo.fb
+
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) ./files/display-manager.uci $(1)/etc/config/display
+
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/uci-defaults/99-enable-wifi $(1)/etc/uci-defaults/99-enable-wifi
+endef
+
+$(eval $(call BuildPackage,router-display))
