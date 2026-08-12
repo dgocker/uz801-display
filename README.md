@@ -40,11 +40,14 @@ the Firehose programmer for this SoC, which `edl` cannot supply on its own:
 curl -sLO https://raw.githubusercontent.com/OneLabsTools/Programmers/master/prog_emmc_firehose_8916.mbn
 ```
 
-**Start the flasher first, then put the device into EDL** — not the other way
-round. With no programmer loaded the device holds EDL for only a few seconds
-and drops off the bus, and `edl` then sits waiting forever for a device that is
-no longer there. So run the command, and while it prints `Waiting for the
-device`, hold Reset and plug in USB (it enumerates as `05c6:9008`):
+Without `--loader` nothing works: `edl` finds the device, prints
+`Mode detected: sahara` and waits forever, because it has no programmer to send
+it. That looks exactly like a broken device and is the single most common way
+to lose an hour here.
+
+Put the device into EDL — hold Reset while plugging in USB, it enumerates as
+`05c6:9008` — and it stays there until you reset or unplug it, so there is no
+rush:
 
 ```sh
 EDL="edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC"

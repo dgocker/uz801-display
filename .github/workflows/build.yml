@@ -297,9 +297,9 @@ jobs:
           edl --loader=prog_emmc_firehose_8916.mbn reset
           ```
 
-          Start the flasher first and put the device into EDL afterwards: with
-          no programmer loaded it drops off the bus within seconds. `reset` must
-          be given without `--memory=eMMC`.
+          The `--loader` is not optional: without it `edl` finds the device,
+          prints `Mode detected: sahara` and waits forever, with nothing to send
+          it. `reset` must be given without `--memory=eMMC`.
 
           Back up every partition before the first flash - `modem`, `modemst1`,
           `modemst2`, `fsg`, `fsc` and `persist` carry the IMEI and the radio
