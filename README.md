@@ -25,20 +25,33 @@ device itself.
 * **Wi-Fi QR code** with SSID and password, on a double press of the button
 * **Custom boot logo**
 * **LTE**, Wi-Fi AP, USB networking
+* **Battery charging**, with a state of charge derived from the vendor's own
+  discharge curve, and a button that can finally switch the device off
 * **Modem control from the browser** — network mode, LTE bands, APN, operator
   scan with one-click selection, and automatic rollback if the modem fails to
   register
 
 ## Install
 
-Grab `boot.img` and `system.img` from [Releases](../../releases), put the
-device into EDL (hold Reset while plugging in USB — it enumerates as
-`05c6:9008`), then:
+Grab `boot.img` and `system.img` from [Releases](../../releases). You also need
+the Firehose programmer for this SoC, which `edl` cannot supply on its own:
 
 ```sh
-edl w boot   openwrt-msm89xx-msm8916-yiming-uz801v3-squashfs-boot.img
-edl w rootfs openwrt-msm89xx-msm8916-yiming-uz801v3-squashfs-system.img
-edl reset
+curl -sLO https://raw.githubusercontent.com/OneLabsTools/Programmers/master/prog_emmc_firehose_8916.mbn
+```
+
+**Start the flasher first, then put the device into EDL** — not the other way
+round. With no programmer loaded the device holds EDL for only a few seconds
+and drops off the bus, and `edl` then sits waiting forever for a device that is
+no longer there. So run the command, and while it prints `Waiting for the
+device`, hold Reset and plug in USB (it enumerates as `05c6:9008`):
+
+```sh
+EDL="edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC"
+
+$EDL w boot   openwrt-msm89xx-msm8916-yiming-uz801v3-squashfs-boot.img
+$EDL w rootfs openwrt-msm89xx-msm8916-yiming-uz801v3-squashfs-system.img
+edl --loader=prog_emmc_firehose_8916.mbn reset
 ```
 
 Only `boot` and `rootfs` are written. The partition table, the bootloaders and
@@ -46,6 +59,13 @@ the radio partitions (IMEI, calibration) are left alone.
 
 > `edl reset` must be called **without** `--memory=eMMC`. With that flag the
 > command is misparsed and the device never restarts.
+
+If the device does not come back after `reset`, **do not press the button** —
+pull the USB cable and the battery for a few seconds instead. A boot that dies
+early leaves the PMIC still holding power, and in that state it considers the
+device to be running: no press of any length will start it, because there is
+nothing to start. Removing power is the only way to clear it. See
+[Power](#power).
 
 Afterwards Wi-Fi comes up on its own (SSID `OpenWrt`, open — change it) and so
 does USB networking. Set your APN under **Network → Modem**.
@@ -60,8 +80,28 @@ With the backlight lit the device draws noticeably more. Running it without
 the battery on a weak USB port makes it brown out and reboot; with the battery
 fitted it is stable.
 
-When the device is off and running from battery, it powers on with a **long
-press** of the button — that is the PMIC's behaviour, not the firmware's.
+**The button:** a short press wakes the screen, a double press shows the Wi-Fi
+QR code, and a **hold of three seconds powers the device off**. Powering on is
+a hold of a couple of seconds. Applying USB power also switches it on by
+itself — that is the PMIC, which is built to wake for charging.
+
+Two things about it are hardware, not firmware, and cannot be changed from
+here:
+
+* Holding the button for about **twelve seconds resets** the device. The PMIC
+  does it on its own (`S1` 10.3 s then `S2` 2 s, warm reset), below the
+  operating system entirely. Long holds are therefore counterproductive — the
+  device starts, and the hold you are still applying restarts it.
+* A **hung boot leaves the PMIC powered**. It keeps asserting `PS_HOLD`, so as
+  far as it is concerned the device is already on and a press has nothing to
+  do. Pull the cable and the battery for a few seconds; that is the only way
+  out, and the twelve second reset above is the next best thing.
+
+This is worth knowing because it looks exactly like a dead device. The PMIC
+records what happened in `PON_REASON1` and `POFF_REASON1`, readable at
+`/sys/kernel/debug/regmap/0-00/registers` (offsets `0x808` and `0x80c`): a
+clean shutdown leaves `0x02` there — `PS_HOLD` — while a crash or a brown-out
+leaves nothing at all.
 
 ---
 
@@ -132,6 +172,76 @@ restart button on GPIO23 (the panel's D/C) and the green LED on GPIO8
 (`blsp_spi3` MOSI). Both are removed in `patches/806-*.patch`.
 
 ---
+
+## The battery never charged
+
+Nothing in mainline enables `pm8916_charger`, so no driver ever programmed a
+charge current: the cell got whatever the bootloader happened to leave, which
+is little enough that a power bank sees no load at all and switches itself
+off. The pack only ever discharged.
+
+Enabling the charger by itself is what breaks USB networking, and it is not
+obvious why. `pm8916_charger` and `pm8916_usbin` both claim register `0x1300`
+and the `usb_vbus` interrupt, so the two fight over the block and the gadget
+loses its VBUS source. The charger driver registers an extcon of its own, so
+the fix is to hand USB over to it and retire `pm8916_usbin` rather than run
+both:
+
+```dts
+&pm8916_charger { status = "okay"; };
+&pm8916_usbin   { status = "disabled"; };
+&usb            { extcon = <&pm8916_charger>; };
+&usb_hs_phy     { extcon = <&pm8916_charger>; };
+```
+
+Every value comes from the stock Android device tree of this board, read back
+from an EDL dump rather than guessed:
+
+| property | value | where from |
+|---|---|---|
+| charge voltage | 4.20 V | `qcom,vddmax-mv` |
+| safety trip | 4.35 V | `qcom,vddsafe-mv` |
+| charge current | 1 A | `qcom,ibatsafe-ma` |
+| cutoff | 3.30 V | `qcom,v-cutoff-uv` |
+| internal resistance | 180 mΩ | `qcom,default-rbatt-mohm` |
+
+Note the charge ceiling. The cell is labelled *maximum charging voltage
+4.35 V*, and the vendor charged it to **4.20** anyway, keeping 4.35 as the trip
+only. Following the label would overcharge the pack for its whole life.
+
+### There is no percentage to read
+
+`pm8916_bms_vm` implements `STATUS`, `VOLTAGE_NOW`, `VOLTAGE_OCV` and `HEALTH`
+— and no `CAPACITY` at all. No amount of device tree work produces a
+percentage, because the driver never publishes one. It is derived in
+`update-display` instead, from the vendor's own discharge curve
+(`qcom,pc-temp-ocv-lut` at 25 °C, also from the dump).
+
+Three corrections make that estimate usable rather than decorative:
+
+* **The curve, not a straight line.** A linear map of terminal voltage used to
+  read 49 % and then 71 % thirty seconds later. The curve is flat through the
+  middle and steep at both ends; linear is not an approximation of it.
+* **The drop across the cell.** While charging, terminal voltage sits about
+  `I × R` above the open circuit value the curve is indexed by — 1 A through
+  180 mΩ, so 180 mV.
+* **A speed limit.** 3000 mAh at 1 A gains about 1.7 % per minute, so the
+  displayed value is not allowed to move faster than the chemistry can.
+
+At boot the estimate anchors on `VOLTAGE_OCV`, which the hardware can only
+measure while the system is off and the driver serves for 180 seconds
+afterwards. That is exactly when the estimate restarts, and terminal voltage at
+that moment is the worst possible input — sagging under the boot load and
+riding high on charge current at once.
+
+It is still an estimate from voltage, not a coulomb count: expect a few points
+of error, and more while current is flowing.
+
+Charging status comes from the charger, not the gauge. The gauge decides it
+through `power_supply_am_i_supplied()`, which needs `power-supplies` on the
+gauge itself — put on the battery node it is silently ignored, and the gauge
+keeps answering `Discharging` while the charger is plainly pushing current into
+the cell.
 
 ## The modem does not work with ModemManager
 
