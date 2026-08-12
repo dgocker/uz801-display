@@ -22,6 +22,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
 
+    # The default token is read-only, so without this the release step fails
+    # at the very end of an hour-long build.
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout this repository
         uses: actions/checkout@v4
@@ -269,3 +274,40 @@ jobs:
             openwrt/bin/targets/msm89xx/msm8916/*.manifest
             openwrt/bin/targets/msm89xx/msm8916/*flash.sh
             openwrt/bin/targets/msm89xx/msm8916/sha256sums
+
+      # Artifacts expire after 90 days and need a GitHub login to download,
+      # which is no good for a forum thread. Publish a release instead, so the
+      # links in the README and on 4PDA point at something permanent that
+      # anyone can fetch.
+      - name: Publish a release
+        if: success() && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd openwrt/bin/targets/msm89xx/msm8916
+          TAG="${{ steps.ver.outputs.tag }}-$(date -u +%Y%m%d-%H%M)"
+
+          cat > notes.md <<'NOTES'
+          Flash over EDL - only `boot` and `rootfs` are written, the partition
+          table, the bootloaders and the radio partitions are left alone.
+
+          ```sh
+          edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC w boot   *-boot.img
+          edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC w rootfs *-system.img
+          edl --loader=prog_emmc_firehose_8916.mbn reset
+          ```
+
+          Start the flasher first and put the device into EDL afterwards: with
+          no programmer loaded it drops off the bus within seconds. `reset` must
+          be given without `--memory=eMMC`.
+
+          Back up every partition before the first flash - `modem`, `modemst1`,
+          `modemst2`, `fsg`, `fsc` and `persist` carry the IMEI and the radio
+          calibration and cannot be regenerated.
+          NOTES
+
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "OpenWrt ${{ steps.ver.outputs.tag }} for ${{ env.DEVICE }}" \
+            --notes-file notes.md \
+            *-boot.img *-system.img sha256sums
