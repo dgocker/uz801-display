@@ -163,7 +163,8 @@ jobs:
           # Prove the merge landed: these two are what the screen hangs on.
           grep -qx 'CONFIG_STAGING=y' "$CFG" || { echo "CONFIG_STAGING did not merge"; exit 1; }
           grep -qx 'CONFIG_FB_TFT_GC9107=y' "$CFG" || { echo "GC9107 did not merge"; exit 1; }
-          grep -c 'CONFIG_.*=.*CONFIG_' "$CFG" | grep -qx 0 || { echo "glued config lines"; exit 1; }
+          GLUED=$(grep -c 'CONFIG_.*=.*CONFIG_' "$CFG" || true)
+          [ "${GLUED:-0}" -eq 0 ] || { echo "glued config lines: $GLUED"; exit 1; }
           echo "kernel config merged cleanly"
 
       - name: Update feeds
