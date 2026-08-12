@@ -63,8 +63,28 @@ $EDL w rootfs openwrt-msm89xx-msm8916-yiming-uz801v3-squashfs-system.img
 edl --loader=prog_emmc_firehose_8916.mbn reset
 ```
 
-Only `boot` and `rootfs` are written. The partition table, the bootloaders and
-the radio partitions (IMEI, calibration) are left alone.
+That writes `boot` and `rootfs` only, and leaves the partition table, the
+bootloaders and the radio partitions alone. **It works if the device already
+runs OpenWrt** — coming from the stock Android is a different job, see below.
+
+### Coming from the stock Android
+
+The stock partition table has no `rootfs` at all: it carries `system`,
+`userdata` and `cache` instead, so there is nowhere for those two commands to
+write. A conversion needs the new partition table and the bootloaders as well,
+and the radio partitions have to be saved and put back, because repartitioning
+moves them — `modem` goes from sector 131072 to 7170, `persist` from 2067552 to
+144386. Miss that and the IMEI and the radio calibration are gone.
+
+`flash.sh`, `*-gpt_both0.bin` and `*-firmware.zip` in the release do all of it:
+
+```sh
+bash openwrt-msm89xx-msm8916-yiming-uz801v3-flash.sh
+```
+
+The conversion also removes `recovery`, `splash`, `userdata` and `cache`, along
+with the backup copies of the bootloaders. Going back to Android means
+restoring from a dump, the stock partition table included.
 
 > `edl reset` must be called **without** `--memory=eMMC`. With that flag the
 > command is misparsed and the device never restarts.
@@ -79,9 +99,16 @@ nothing to start. Removing power is the only way to clear it. See
 Afterwards Wi-Fi comes up on its own (SSID `OpenWrt`, open — change it) and so
 does USB networking. Set your APN under **Network → Modem**.
 
-**Back up first.** Dump every partition over EDL before you start, especially
-`modem`, `modemst1`, `modemst2`, `fsg`, `fsc` and `persist` — they hold the
-IMEI and the radio calibration, and nothing can regenerate them.
+**Back up first**, and back up everything:
+
+```sh
+edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC rl backup
+```
+
+`modem`, `modemst1`, `modemst2`, `fsg`, `fsc` and `persist` hold the IMEI and
+the radio calibration, and nothing can regenerate them. Resist the urge to
+`--skip` the big partitions: `system` *is* Android, and without it the dump
+cannot take you back, however complete the rest of it looks.
 
 ## Power
 
