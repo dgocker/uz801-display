@@ -45,9 +45,15 @@ Without `--loader` nothing works: `edl` finds the device, prints
 it. That looks exactly like a broken device and is the single most common way
 to lose an hour here.
 
-Put the device into EDL — hold Reset while plugging in USB, it enumerates as
-`05c6:9008` — and it stays there until you reset or unplug it, so there is no
-rush:
+Getting into EDL is the part every guide gets wrong. Holding Reset does **not**
+put this device into EDL: with the stock Android on it that lands in fastboot,
+from which EDL needs a further command (`fastboot oem edl`). The method that
+works regardless of what is installed is the hardware one — short the USB `D+`
+line to ground on the board while applying power, which drops the SoC's boot
+ROM straight into EDL.
+
+Either way the device then enumerates as `05c6:9008` and stays in EDL until it
+is reset or unplugged, so there is no hurry:
 
 ```sh
 EDL="edl --loader=prog_emmc_firehose_8916.mbn --memory=eMMC"
