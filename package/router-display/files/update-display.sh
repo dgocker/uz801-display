@@ -140,7 +140,19 @@ OCV="4189 100 4073 95 4044 90 4039 85 4032 80 4025 75 4008 70 3974 65 3953 60 39
 # battery node is linked to the charger.
 [ "$(cat "$CHG/online" 2>/dev/null)" = "1" ] && CHARGING="-c"
 
-V=$(cat "$BMS/voltage_now" 2>/dev/null)
+# Prefer the gauge's open circuit reading while it is still valid. The hardware
+# can only measure OCV with the system off, so the driver serves the value it
+# captured before boot and invalidates it after 180 seconds. Inside that window
+# it is a far better anchor than terminal voltage, which sags under the boot
+# load and rides high while charging - and boot is exactly when the estimate
+# has to start over, since the smoothing state lives in /tmp.
+V=$(cat "$BMS/voltage_ocv" 2>/dev/null)
+if [ -n "$V" ] && [ "$V" -gt 3000000 ] 2>/dev/null; then
+    AT_REST=1          # open circuit already, nothing to compensate for
+else
+    AT_REST=""
+    V=$(cat "$BMS/voltage_now" 2>/dev/null)
+fi
 
 # With no pack fitted the gauge measures the supply rail the charger drives,
 # not a cell, and reports about 4.35 V - above the 4.20 V the charger
@@ -156,7 +168,7 @@ if [ -n "$V" ]; then
     # (qcom,default-rbatt-mohm = <0xB4>) and the charger is set to 1 A, so
     # 180 mV. Without this the reading leaps some twenty points the instant a
     # charger is plugged in.
-    [ -n "$CHARGING" ] && V=$((V - 180000))
+    [ -n "$CHARGING" ] && [ -z "$AT_REST" ] && V=$((V - 180000))
 
     BATTERY=$(awk -v v="$V" -v tbl="$OCV" 'BEGIN{
         n = split(tbl, a, " ");
