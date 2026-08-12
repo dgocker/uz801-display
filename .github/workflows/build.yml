@@ -206,10 +206,30 @@ jobs:
           $K/scripts/dtc/dtc -I dtb -O dts $DTB -o /tmp/check.dts 2>/dev/null
           grep -q 'galaxycore,gc9107' /tmp/check.dts || { echo "panel missing from the built DTB"; exit 1; }
           grep -q 'sink' /tmp/check.dts             || { echo "backlight sink mode missing"; exit 1; }
-          grep -c 'fbtft\|gc9107' $K/System.map | grep -qv '^0$' || { echo "display driver not in kernel"; exit 1; }
+          # Diagnose, don't just assert. A missing System.map, a driver built
+          # as a module and a driver genuinely dropped by kconfig all used to
+          # produce the same bare "not in kernel" line, which says nothing
+          # about which of the three happened.
+          echo "--- kernel dir: $K"
+          if [ ! -f "$K/System.map" ]; then
+            echo "System.map is missing"
+            ls "$K" | head -20
+            exit 1
+          fi
+          echo "--- display symbols in the kernel config ---"
+          grep -E 'FB_TFT|GC9107|FB_DEVICE|FB_BACKLIGHT' "$K/.config" || echo "(nothing matched)"
+          echo "--- modules built, if any ---"
+          find "$K" -name 'fb_gc9107.ko' -o -name 'fbtft.ko' | head -5 || true
+          N=$(grep -c -i 'fbtft\|gc9107' "$K/System.map" || true)
+          echo "--- matching symbols in System.map: ${N:-0}"
+          [ "${N:-0}" -gt 0 ] || { echo "display driver is not linked into the kernel"; exit 1; }
           echo "image verified"
 
+      # Upload whatever was produced even if verification objected: the images
+      # are built by then, and throwing away an hour's output because a check
+      # script was wrong helps nobody.
       - name: Upload firmware
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-${{ env.DEVICE }}
