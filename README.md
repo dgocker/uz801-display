@@ -11,6 +11,10 @@ device itself.
 
 [Русская версия](README_ru.md)
 
+[![Donate](https://img.shields.io/badge/Donate-DonationAlerts-FF6B00?style=for-the-badge)](https://www.donationalerts.com/r/dgocker)
+
+**If this saved you a weekend, [buy me a coffee](https://www.donationalerts.com/r/dgocker).**
+
 ---
 
 ## What works
@@ -226,6 +230,13 @@ there is the most common way this dies, forty minutes in:
 ```sh
 make target/linux/prepare
 ```
+
+## Support
+
+This was reverse-engineered from a stock Android DTB over a lot of evenings,
+and it is given away for free. If it was useful:
+
+**[donationalerts.com/r/dgocker](https://www.donationalerts.com/r/dgocker)**
 
 ## Credits
 

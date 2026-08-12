@@ -11,6 +11,10 @@ UFI103) **с работающим штатным экраном** — плюс �
 
 [English version](README.md)
 
+[![Поддержать](https://img.shields.io/badge/%D0%9F%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-DonationAlerts-FF6B00?style=for-the-badge)](https://www.donationalerts.com/r/dgocker)
+
+**Если сборка сэкономила вам выходные — [поддержать автора](https://www.donationalerts.com/r/dgocker).**
+
 ---
 
 ## Что работает
@@ -233,6 +237,13 @@ make -j$(nproc)
 ```sh
 make target/linux/prepare
 ```
+
+## Поддержать
+
+Всё это выковыряно из штатного андроидного DTB за много вечеров и отдаётся
+бесплатно. Если пригодилось:
+
+**[donationalerts.com/r/dgocker](https://www.donationalerts.com/r/dgocker)**
 
 ## Благодарности
 
