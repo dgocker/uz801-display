@@ -53,9 +53,15 @@ jobs:
           git clone --depth 1 -b "${{ steps.ver.outputs.tag }}" \
             https://git.openwrt.org/openwrt/openwrt.git openwrt
 
+      # Restore and save are kept separate on purpose. The all-in-one
+      # actions/cache declares its save step as post-if: success(), so a build
+      # that dies at the last step throws away the whole hour it just spent.
+      # These builds fail often enough that saving on failure is the point.
+
       # Downloads change rarely and cost the most wall clock on a cold run.
       - name: Restore downloads cache
-        uses: actions/cache@v4
+        id: cache-dl
+        uses: actions/cache/restore@v4
         with:
           path: openwrt/dl
           key: dl-${{ steps.ver.outputs.tag }}-${{ hashFiles('overlay/config/diffconfig_uz801') }}
@@ -66,7 +72,8 @@ jobs:
       # The toolchain is the other expensive half; it only needs rebuilding
       # when the OpenWrt tag changes, not when our packages do.
       - name: Restore toolchain and staging cache
-        uses: actions/cache@v4
+        id: cache-toolchain
+        uses: actions/cache/restore@v4
         with:
           path: |
             openwrt/staging_dir
@@ -77,7 +84,8 @@ jobs:
             toolchain-${{ steps.ver.outputs.tag }}-
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        id: cache-ccache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
           key: ccache-${{ steps.ver.outputs.tag }}-${{ github.sha }}
@@ -128,6 +136,35 @@ jobs:
         run: |
           export CCACHE_DIR=~/.ccache
           make -j$(nproc) || make -j1 V=s
+
+      # if: always() is what makes a failed build still worth its hour. Skipped
+      # on an exact key hit, where there is nothing new to store.
+      - name: Save downloads cache
+        if: always() && steps.cache-dl.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: openwrt/dl
+          key: dl-${{ steps.ver.outputs.tag }}-${{ hashFiles('overlay/config/diffconfig_uz801') }}
+
+      - name: Save toolchain and staging cache
+        if: always() && steps.cache-toolchain.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir/host
+            openwrt/build_dir/toolchain-*
+          key: toolchain-${{ steps.ver.outputs.tag }}-${{ runner.os }}
+
+      - name: Save ccache
+        if: always() && steps.cache-ccache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ steps.ver.outputs.tag }}-${{ github.sha }}
 
       - name: Verify the built image
         working-directory: openwrt
