@@ -1,6 +1,6 @@
 --- a/arch/arm64/boot/dts/qcom/msm8916-yiming-uz801v3.dts
 +++ b/arch/arm64/boot/dts/qcom/msm8916-yiming-uz801v3.dts
-@@ -3,33 +3,248 @@
+@@ -3,35 +3,248 @@
  /dts-v1/;
  
  #include "msm8916-ufi.dtsi"
@@ -17,13 +17,14 @@
 -
  &led_b {
  	gpios = <&tlmm 6 GPIO_ACTIVE_HIGH>;
--};
--
--&led_g {
--	gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
-+	function = LED_FUNCTION_WLAN;
+ 	function = LED_FUNCTION_WLAN;
  };
  
+-&led_g {
+-	gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
+-	function = LED_FUNCTION_WAN;
+-};
+-
  &led_r {
  	gpios = <&tlmm 7 GPIO_ACTIVE_HIGH>;
  };
